@@ -234,7 +234,7 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
         )
 
         if is_fallback:
-            resposta += "\nℹ️ *Nota:* API externa temporariamente indisponível. Cálculo efetuado com base na auditoria estrita de Stories."
+            resposta += "\n⚠️ *Esgotaste as 100 tentativas do limite da API mensal.* A avaliação foi gerada com base na estimativa de Stories."
 
         if relatorio['warnings']:
             resposta += "\n🚨 *Alertas de Risco:*\n"
