@@ -41,8 +41,11 @@ def home():
     return "Bot iGaming Online 24/7!"
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    server.run(host="0.0.0.0", port=port)
+    try:
+        port = int(os.environ.get("PORT", 10000))
+        server.run(host="0.0.0.0", port=port, use_reloader=False)
+    except Exception as e:
+        print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
 # Funções de Apoio com Tolerância a Erros (Fallback)
@@ -50,7 +53,7 @@ def run_flask():
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip().lower()
     
-    # 1. Cache em memória (24h) para poupar as 100 pesquisas
+    # Cache em memória (24h)
     if clean_username in CACHE_API:
         timestamp, data = CACHE_API[clean_username]
         if time.time() - timestamp < 86400:
@@ -80,14 +83,13 @@ def buscar_dados_instagram_api(username: str):
                 CACHE_API[clean_username] = (time.time(), resultado)
                 return resultado
 
-        # Se ultrapassar as 100/mês ou falhar, entra no modo de segurança sem dar erro
         return 0, 0, 0, True
             
     except Exception:
         return 0, 0, 0, True
 
 # ----------------------------------------------------
-# Comandos Principais
+# Comandos Principais e Respostas Automáticas
 # ----------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ajuda(update, context)
@@ -95,7 +97,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "👋 *Olá! Sou o Avaliador de Influenciadores iGaming.*\n\n"
-        "🤖 Não percebi o que escreveste, mas estou aqui para ajudar!\n\n"
         "👉 Para iniciar uma nova avaliação, escreve: `/avaliar`\n"
         "🔄 Para reiniciar a qualquer momento, escreve: `/cancelar`"
     )
@@ -297,8 +298,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(conv_handler)
-    # Garante resposta a QUALQUER outra mensagem fora de comandos
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Atualizado com Resposta Automática Ativa!")
+    print("🚀 Bot Atualizado e Protegido!")
     app.run_polling()
