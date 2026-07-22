@@ -25,7 +25,7 @@ RAPIDAPI_KEY = "44faf2cfd5msh084db8e1cf193e2p164debjsncb95a30318a5"
 
 evaluator = IGamingEvaluator(default_cpa=100.0)
 
-# Cache simples para evitar chamadas repetidas e erro 429
+# Cache simples para evitar chamadas repetidas
 CACHE_API = {}
 
 # Estados da Conversa Guiada
@@ -50,45 +50,41 @@ def run_flask():
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip().lower()
     
-    # 1. Verificar Cache (se pesquisou nos últimos 30 min, usa o mesmo)
+    # 1. Cache em memória (24h) para poupar as 100 pesquisas
     if clean_username in CACHE_API:
         timestamp, data = CACHE_API[clean_username]
-        if time.time() - timestamp < 1800: # 30 min
+        if time.time() - timestamp < 86400:
             return data
 
-    url = "https://instagram-scraper-stable-api.p.rapidapi.com/ig_get_fb_profile_v3.php"
-    payload = f"username_or_url={clean_username}"
+    url = f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/{clean_username}"
     headers = {
-        "content-type": "application/x-www-form-urlencoded",
         "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "instagram-scraper-stable-api.p.rapidapi.com"
+        "x-rapidapi-host": "instagram-public-bulk-scraper.p.rapidapi.com"
     }
     
     try:
-        response = requests.post(url, data=payload, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=8)
         
         if response.status_code == 200:
             data = response.json()
-            followers = data.get("follower_count", 0) or data.get("user", {}).get("follower_count", 0) or 5000
-            posts = data.get("timeline_media", {}).get("edges", []) or data.get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
+            followers = (
+                data.get("follower_count") or 
+                data.get("data", {}).get("follower_count") or 
+                data.get("user", {}).get("follower_count", 0)
+            )
             
-            total_likes = sum([p.get("node", {}).get("edge_liked_by", {}).get("count", 0) for p in posts[:10]])
-            total_comments = sum([p.get("node", {}).get("edge_media_to_comment", {}).get("count", 0) for p in posts[:10]])
-            
-            count = len(posts[:10])
-            avg_likes = int(total_likes / count) if count > 0 else 100
-            avg_comments = int(total_comments / count) if count > 0 else 10
-            
-            resultado = (followers, avg_likes, avg_comments, False) # False = Sem erro
-            CACHE_API[clean_username] = (time.time(), resultado)
-            return resultado
-        else:
-            # Em caso de Erro 429 (Rate Limit) ou outro erro da API, usa modo de contingência
-            return 5000, 150, 10, True # True = Foi usado Fallback
+            if followers > 0:
+                avg_likes = int(followers * 0.03)
+                avg_comments = int(avg_likes * 0.05)
+                resultado = (followers, avg_likes, avg_comments, False)
+                CACHE_API[clean_username] = (time.time(), resultado)
+                return resultado
+
+        # Se ultrapassar as 100/mês ou falhar, entra no modo de segurança sem dar erro
+        return 0, 0, 0, True
             
     except Exception:
-        # Em caso de timeout ou falha de conexão, usa estimativa sem bloquear
-        return 5000, 150, 10, True
+        return 0, 0, 0, True
 
 # ----------------------------------------------------
 # Comandos Principais
@@ -303,5 +299,5 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Atualizado e Protegido contra Erro 429!")
+    print("🚀 Bot Atualizado e Protegido!")
     app.run_polling()
