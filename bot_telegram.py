@@ -94,10 +94,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "👋 *Olá! Bem-vindo ao Avaliador de Influenciadores iGaming.*\n\n"
-        "🎯 *Como Usar (Modo Guiado):*\n"
-        "Escreve `/avaliar` para iniciar o questionário passo a passo.\n\n"
-        "🔄 *Reiniciar:* Escreve `/avaliar` ou `/cancelar` a qualquer momento para recomeçar."
+        "👋 *Olá! Sou o Avaliador de Influenciadores iGaming.*\n\n"
+        "🤖 Não percebi o que escreveste, mas estou aqui para ajudar!\n\n"
+        "👉 Para iniciar uma nova avaliação, escreve: `/avaliar`\n"
+        "🔄 Para reiniciar a qualquer momento, escreve: `/cancelar`"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -297,7 +297,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(conv_handler)
+    # Garante resposta a QUALQUER outra mensagem fora de comandos
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Atualizado e Protegido!")
+    print("🚀 Bot Atualizado com Resposta Automática Ativa!")
     app.run_polling()
