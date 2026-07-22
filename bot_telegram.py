@@ -46,22 +46,27 @@ def run_flask():
         print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
-# Extração Flexível de Seguidores em Qualquer Nível do JSON
+# Procura Exaustiva de Seguidores no JSON
 # ----------------------------------------------------
-def extrair_seguidores_recursivo(data):
+def extrair_seguidores(data):
     if isinstance(data, dict):
+        # Chaves mais comuns usadas em APIs do Instagram na RapidAPI
+        for key in ["follower_count", "followers_count", "followers", "edge_followed_by", "follower"]:
+            if key in data:
+                val = data[key]
+                if isinstance(val, (int, float)) and val > 0:
+                    return int(val)
+                if isinstance(val, dict) and "count" in val:
+                    return int(val["count"])
+        
         for k, v in data.items():
-            if k in ["follower_count", "followers_count", "followers"] and isinstance(v, (int, float)) and v > 0:
-                return int(v)
-            if k == "edge_followed_by" and isinstance(v, dict) and "count" in v:
-                return int(v["count"])
             if isinstance(v, (dict, list)):
-                res = extrair_seguidores_recursivo(v)
+                res = extrair_seguidores(v)
                 if res > 0:
                     return res
     elif isinstance(data, list):
         for item in data:
-            res = extrair_seguidores_recursivo(item)
+            res = extrair_seguidores(item)
             if res > 0:
                 return res
     return 0
@@ -82,30 +87,35 @@ def buscar_dados_instagram_api(username: str):
         "x-rapidapi-host": "instagram-public-bulk-scraper.p.rapidapi.com"
     }
 
-    # Testamos os dois formatos de endpoints aceites por esta API
-    urls_para_testar = [
-        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/{clean_username}",
-        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user_info?username={clean_username}"
+    # Testamos as variações de endpoints suportadas pelo provider
+    endpoints = [
+        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user_info?username={clean_username}",
+        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/info?username={clean_username}",
+        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/{clean_username}"
     ]
 
-    for url in urls_para_testar:
+    for url in endpoints:
         try:
-            response = requests.get(url, headers=headers, timeout=8)
-            logging.info(f"API Request [{clean_username}] {url} -> Status {response.status_code}")
+            logging.info(f"A tentar API: {url}")
+            response = requests.get(url, headers=headers, timeout=10)
             
             if response.status_code == 200:
                 json_data = response.json()
-                followers = extrair_seguidores_recursivo(json_data)
+                logging.info(f"Resposta JSON de {url}: {str(json_data)[:300]}")
+                
+                followers = extrair_seguidores(json_data)
                 
                 if followers > 0:
                     avg_likes = int(followers * 0.03)
                     avg_comments = int(avg_likes * 0.05)
                     resultado = (followers, avg_likes, avg_comments, False)
                     CACHE_API[clean_username] = (time.time(), resultado)
-                    logging.info(f"Sucesso API [{clean_username}]: {followers} seguidores encontrados!")
+                    logging.info(f"Seguidores encontrados: {followers}")
                     return resultado
+            else:
+                logging.warning(f"API respondeu com status {response.status_code} em {url}")
         except Exception as e:
-            logging.error(f"Erro ao consultar API {url}: {e}")
+            logging.error(f"Erro no pedido API ({url}): {e}")
 
     return 0, 0, 0, True
 
