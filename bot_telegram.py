@@ -46,7 +46,28 @@ def run_flask():
         print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
-# API Instagram - Leitura Direta de Seguidores e Engajamento
+# Extração Flexível de Seguidores em Qualquer Nível do JSON
+# ----------------------------------------------------
+def extrair_seguidores_recursivo(data):
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if k in ["follower_count", "followers_count", "followers"] and isinstance(v, (int, float)) and v > 0:
+                return int(v)
+            if k == "edge_followed_by" and isinstance(v, dict) and "count" in v:
+                return int(v["count"])
+            if isinstance(v, (dict, list)):
+                res = extrair_seguidores_recursivo(v)
+                if res > 0:
+                    return res
+    elif isinstance(data, list):
+        for item in data:
+            res = extrair_seguidores_recursivo(item)
+            if res > 0:
+                return res
+    return 0
+
+# ----------------------------------------------------
+# API Instagram
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip().lower()
@@ -56,38 +77,37 @@ def buscar_dados_instagram_api(username: str):
         if time.time() - timestamp < 86400:
             return data
 
-    url = f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/{clean_username}"
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": "instagram-public-bulk-scraper.p.rapidapi.com"
     }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            raw = response.json()
-            
-            # Tenta encontrar o nó principal do perfil
-            d = raw.get("data") or raw.get("user") or raw
-            
-            followers = (
-                d.get("follower_count") or 
-                d.get("followers_count") or 
-                d.get("followers") or 0
-            )
-            
-            if followers > 0:
-                avg_likes = int(followers * 0.03)
-                avg_comments = int(avg_likes * 0.05)
-                resultado = (followers, avg_likes, avg_comments, False)
-                CACHE_API[clean_username] = (time.time(), resultado)
-                return resultado
 
-        return 0, 0, 0, True
+    # Testamos os dois formatos de endpoints aceites por esta API
+    urls_para_testar = [
+        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/{clean_username}",
+        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user_info?username={clean_username}"
+    ]
+
+    for url in urls_para_testar:
+        try:
+            response = requests.get(url, headers=headers, timeout=8)
+            logging.info(f"API Request [{clean_username}] {url} -> Status {response.status_code}")
             
-    except Exception:
-        return 0, 0, 0, True
+            if response.status_code == 200:
+                json_data = response.json()
+                followers = extrair_seguidores_recursivo(json_data)
+                
+                if followers > 0:
+                    avg_likes = int(followers * 0.03)
+                    avg_comments = int(avg_likes * 0.05)
+                    resultado = (followers, avg_likes, avg_comments, False)
+                    CACHE_API[clean_username] = (time.time(), resultado)
+                    logging.info(f"Sucesso API [{clean_username}]: {followers} seguidores encontrados!")
+                    return resultado
+        except Exception as e:
+            logging.error(f"Erro ao consultar API {url}: {e}")
+
+    return 0, 0, 0, True
 
 # ----------------------------------------------------
 # Comandos
@@ -215,7 +235,6 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             pct_pais=pct_pais
         )
         
-        # Formatação explícita dos seguidores
         if followers > 0:
             txt_seguidores = f"{followers:,}"
             er_val = round(((avg_likes + avg_comments) / followers) * 100, 2)
