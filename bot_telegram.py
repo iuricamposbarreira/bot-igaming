@@ -27,7 +27,7 @@ evaluator = IGamingEvaluator(default_cpa=100.0)
 
 CACHE_API = {}
 
-USERNAME, VIEWS, PAIS, PCT_PAIS, HOMENS = range(5)
+USERNAME, VIEWS, PAIS, PCT_PAIS, HOMENS, IDADES = range(6)
 
 # ----------------------------------------------------
 # Servidor Web Leve (Para o Render ficar sempre Online)
@@ -76,7 +76,6 @@ def buscar_dados_instagram_api(username: str):
             )
             
             if followers and followers > 0:
-                # Tenta extrair dados reais de posts se disponíveis no payload
                 posts = user_data.get("timeline_media", {}).get("edges", []) or user_data.get("posts", [])
                 
                 if posts and len(posts) > 0:
@@ -91,7 +90,6 @@ def buscar_dados_instagram_api(username: str):
                     avg_likes = total_likes // count if count > 0 else int(followers * 0.025)
                     avg_comments = total_comments // count if count > 0 else int(avg_likes * 0.04)
                 else:
-                    # Estimativa de engajamento médio do mercado
                     avg_likes = int(followers * 0.025)
                     avg_comments = int(avg_likes * 0.04)
 
@@ -203,7 +201,7 @@ async def receber_pct_pais(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return HOMENS
 
-async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receber_homens(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.replace("%", "").replace(",", ".").strip()
     try:
         pct_homens = float(text)
@@ -212,11 +210,29 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
         await update.message.reply_text("❌ Insere apenas o número da percentagem. Ex: `35`", parse_mode="Markdown")
         return HOMENS
 
+    await update.message.reply_text(
+        f"✅ % Homens: `{pct_homens}%`\n\n"
+        "6️⃣ *Qual é a Percentagem (%) de Audiência com +18 anos (18-44)?*\n\n"
+        "👉 *Exemplo:* `78` (ou `82.5`)",
+        parse_mode="Markdown"
+    )
+    return IDADES
+
+async def receber_idades_e_gerar_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.replace("%", "").replace(",", ".").strip()
+    try:
+        pct_maiores = float(text)
+        context.user_data['pct_maiores'] = pct_maiores
+    except ValueError:
+        await update.message.reply_text("❌ Insere apenas o número da percentagem. Ex: `78`", parse_mode="Markdown")
+        return IDADES
+
     username = context.user_data['username']
     views_list = context.user_data['views_list']
     avg_story_views = context.user_data['avg_views']
     pais = context.user_data['pais']
     pct_pais = context.user_data['pct_pais']
+    pct_homens = context.user_data['pct_homens']
 
     msg_espera = await update.message.reply_text("🔎 *A extrair dados do Instagram e a gerar auditoria...*", parse_mode="Markdown")
 
@@ -238,13 +254,11 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             pct_pais=pct_pais
         )
 
-        # Cálculo da Taxa de Engajamento e Diagnóstico de Autenticidade
         if followers > 0:
             er_pct = round(((avg_likes + avg_comments) / followers) * 100, 2)
             followers_str = f"{followers:,}"
             likes_comments_str = f"~{avg_likes:,} ❤️ / ~{avg_comments:,} 💬"
             
-            # Análise de Bots com base na rácio Stories/Seguidores e ER
             story_ratio = (avg_story_views / followers) * 100
             if er_pct < 0.5 or story_ratio < 1.0:
                 autenticidade = "⚠️ *Baixa / Suspeita de Bots*"
@@ -269,6 +283,7 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             f"📲 *Média Views Stories:* `{avg_story_views:,}`\n"
             f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']}\n"
             f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story)\n"
+            f"🔞 *Público +18 (18-44):* `{pct_maiores}%`\n"
             f"-----------------------------------\n"
             f"Status: {relatorio['status_emoji']} *{relatorio['status_text']}*\n"
             f"⚠️ Índice de Risco: *{relatorio['risk_index']}*\n\n"
@@ -282,6 +297,9 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             f"-----------------------------------\n"
             f"📋 *Decisão:* {relatorio['recommendation']}\n"
         )
+
+        if pct_maiores < 70.0:
+            resposta += f"\n🚨 *Alerta de Idade:* Apensas {pct_maiores}% do público é +18. Elevado volume de menores de idade.\n"
 
         if relatorio['warnings']:
             resposta += "\n🚨 *Alertas de Risco:*\n"
@@ -331,7 +349,11 @@ if __name__ == '__main__':
             ],
             HOMENS: [
                 CommandHandler("avaliar", iniciar_guiado_ou_rapido),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_homens_e_gerar_relatorio)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_homens)
+            ],
+            IDADES: [
+                CommandHandler("avaliar", iniciar_guiado_ou_rapido),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_idades_e_gerar_relatorio)
             ],
         },
         fallbacks=[
@@ -346,5 +368,5 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Atualizado com Múltiplas Métricas!")
+    print("🚀 Bot Atualizado com Idades e Métricas de Engajamento!")
     app.run_polling()
