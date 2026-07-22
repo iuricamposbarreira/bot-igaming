@@ -58,6 +58,11 @@ def buscar_dados_instagram_api(username: str):
     if response.status_code == 200:
         data = response.json()
         followers = data.get("follower_count", 0) or data.get("user", {}).get("follower_count", 0)
+        
+        # Se não encontrar seguidores ou perfil inválido
+        if not followers and "user" not in data and "follower_count" not in data:
+            raise Exception("Perfil não encontrado ou privado no Instagram.")
+            
         posts = data.get("timeline_media", {}).get("edges", []) or data.get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
         
         total_likes = sum([p.get("node", {}).get("edge_liked_by", {}).get("count", 0) for p in posts[:10]])
@@ -69,7 +74,7 @@ def buscar_dados_instagram_api(username: str):
         
         return followers, avg_likes, avg_comments
     else:
-        raise Exception(f"Erro na API ({response.status_code})")
+        raise Exception(f"Perfil não encontrado ou erro na API ({response.status_code})")
 
 # ----------------------------------------------------
 # Comandos Principais
@@ -85,7 +90,7 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚡️ *Atalho Rápido (Tudo em 1 linha):*\n"
         "`/avaliar @noemi_silipo 33859 33001 15103`\n"
         "`/avaliar @noemi_silipo 33859 33001 15103 pais=it %pais=94.6 homens=15.9`\n\n"
-        "❌ *Cancelar:* Escreve `/cancelar` a qualquer momento para anular o questionário."
+        "❌ *Cancelar / Reiniciar:* Escreve `/avaliar` a qualquer momento para recomeçar do zero!"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -97,10 +102,10 @@ async def iniciar_guiado_ou_rapido(update: Update, context: ContextTypes.DEFAULT
     if context.args:
         return await avaliar_rapido(update, context)
     
-    # Caso contrário, inicia o modo guiado
+    # Caso contrário, limpa dados anteriores e inicia/reinicia o modo guiado
     context.user_data.clear()
     await update.message.reply_text(
-        "📝 *MODO GUIADO DE AVALIAÇÃO*\n\n"
+        "📝 *NOVA AVALIAÇÃO GUIADA*\n\n"
         "1️⃣ *Qual é o Username do Instagram?*\n\n"
         "👉 *Exemplo:* `@noemi_silipo`\n"
         "*(Escreve com o @ no início)*",
@@ -249,13 +254,14 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
 
     except Exception as e:
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_espera.message_id)
-        await update.message.reply_text(f"❌ *Erro:* {str(e)}", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ *Erro:* {str(e)}\n\n_Verifica se o username está correto ou escreve `/avaliar` para tentar de novo._", parse_mode="Markdown")
 
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("🚫 Avaliação cancelada.", parse_mode="Markdown")
+    await update.message.reply_text("🚫 Avaliação cancelada. Escreve `/avaliar` quando quiseres recomeçar.", parse_mode="Markdown")
     return ConversationHandler.END
 
 # ----------------------------------------------------
@@ -351,18 +357,37 @@ if __name__ == '__main__':
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("avaliar", iniciar_guiado_ou_rapido)],
         states={
-            USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_username)],
-            VIEWS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_views)],
-            PAIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_pais)],
-            PCT_PAIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_pct_pais)],
-            HOMENS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_homens_e_gerar_relatorio)],
+            USERNAME: [
+                CommandHandler("avaliar", iniciar_guiado_ou_rapido),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_username)
+            ],
+            VIEWS: [
+                CommandHandler("avaliar", iniciar_guiado_ou_rapido),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_views)
+            ],
+            PAIS: [
+                CommandHandler("avaliar", iniciar_guiado_ou_rapido),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_pais)
+            ],
+            PCT_PAIS: [
+                CommandHandler("avaliar", iniciar_guiado_ou_rapido),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_pct_pais)
+            ],
+            HOMENS: [
+                CommandHandler("avaliar", iniciar_guiado_ou_rapido),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receber_homens_e_gerar_relatorio)
+            ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CommandHandler("avaliar", iniciar_guiado_ou_rapido)
+        ],
+        allow_reentry=True
     )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(conv_handler)
 
-    print("🚀 Bot Atualizado com Modo Guiado!")
+    print("🚀 Bot Atualizado com Suporte a Reinício!")
     app.run_polling()
