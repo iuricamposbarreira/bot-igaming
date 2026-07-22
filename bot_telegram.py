@@ -46,7 +46,7 @@ def run_flask():
         print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
-# API Instagram (Corrigida para ler Seguidores Reais)
+# API Instagram - Extração Avançada
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip().lower()
@@ -63,39 +63,54 @@ def buscar_dados_instagram_api(username: str):
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=8)
+        response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
+            user_data = data.get("data") or data.get("user") or data
             
-            # Mapeamento exaustivo para capturar os seguidores reais da API
-            followers = 0
-            if isinstance(data, dict):
-                followers = (
-                    data.get("follower_count") or 
-                    data.get("followers_count") or
-                    data.get("followers") or
-                    data.get("data", {}).get("follower_count") or 
-                    data.get("data", {}).get("followers_count") or 
-                    data.get("data", {}).get("followers") or
-                    data.get("user", {}).get("follower_count") or
-                    data.get("user", {}).get("followers_count") or 0
-                )
+            followers = (
+                user_data.get("follower_count") or 
+                user_data.get("followers_count") or
+                user_data.get("followers", 0)
+            )
             
             if followers and followers > 0:
-                avg_likes = int(followers * 0.03)
-                avg_comments = int(avg_likes * 0.05)
-                resultado = (followers, avg_likes, avg_comments, False)
+                # Tenta extrair dados reais de posts se disponíveis no payload
+                posts = user_data.get("timeline_media", {}).get("edges", []) or user_data.get("posts", [])
+                
+                if posts and len(posts) > 0:
+                    total_likes = 0
+                    total_comments = 0
+                    count = 0
+                    for post in posts[:6]:
+                        node = post.get("node", post)
+                        total_likes += node.get("like_count") or node.get("edge_liked_by", {}).get("count", 0)
+                        total_comments += node.get("comment_count") or node.get("edge_media_to_comment", {}).get("count", 0)
+                        count += 1
+                    avg_likes = total_likes // count if count > 0 else int(followers * 0.025)
+                    avg_comments = total_comments // count if count > 0 else int(avg_likes * 0.04)
+                else:
+                    # Estimativa de engajamento médio do mercado
+                    avg_likes = int(followers * 0.025)
+                    avg_comments = int(avg_likes * 0.04)
+
+                resultado = {
+                    "followers": followers,
+                    "avg_likes": avg_likes,
+                    "avg_comments": avg_comments,
+                    "is_fallback": False
+                }
                 CACHE_API[clean_username] = (time.time(), resultado)
                 return resultado
 
-        return 0, 0, 0, True
+        return {"followers": 0, "avg_likes": 0, "avg_comments": 0, "is_fallback": True}
             
     except Exception:
-        return 0, 0, 0, True
+        return {"followers": 0, "avg_likes": 0, "avg_comments": 0, "is_fallback": True}
 
 # ----------------------------------------------------
-# Comandos Principais e Respostas Automáticas
+# Comandos Principais
 # ----------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ajuda(update, context)
@@ -203,10 +218,13 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
     pais = context.user_data['pais']
     pct_pais = context.user_data['pct_pais']
 
-    msg_espera = await update.message.reply_text("🔎 *A processar auditoria...*", parse_mode="Markdown")
+    msg_espera = await update.message.reply_text("🔎 *A extrair dados do Instagram e a gerar auditoria...*", parse_mode="Markdown")
 
     try:
-        followers, avg_likes, avg_comments, is_fallback = buscar_dados_instagram_api(username)
+        api_data = buscar_dados_instagram_api(username)
+        followers = api_data["followers"]
+        avg_likes = api_data["avg_likes"]
+        avg_comments = api_data["avg_comments"]
 
         relatorio = evaluator.evaluate_profile(
             username=username,
@@ -219,10 +237,35 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             pais=pais,
             pct_pais=pct_pais
         )
+
+        # Cálculo da Taxa de Engajamento e Diagnóstico de Autenticidade
+        if followers > 0:
+            er_pct = round(((avg_likes + avg_comments) / followers) * 100, 2)
+            followers_str = f"{followers:,}"
+            likes_comments_str = f"~{avg_likes:,} ❤️ / ~{avg_comments:,} 💬"
+            
+            # Análise de Bots com base na rácio Stories/Seguidores e ER
+            story_ratio = (avg_story_views / followers) * 100
+            if er_pct < 0.5 or story_ratio < 1.0:
+                autenticidade = "⚠️ *Baixa / Suspeita de Bots*"
+            elif er_pct >= 1.5 and story_ratio >= 3.0:
+                autenticidade = "🟢 *Alta (Seguidores Orgânicos)*"
+            else:
+                autenticidade = "🟡 *Moderada*"
+        else:
+            followers_str = "Estimado via Stories"
+            likes_comments_str = "N/A"
+            er_pct = "N/A"
+            autenticidade = "🟡 *Baseado na Média dos Stories*"
         
         resposta = (
-            f"📊 *RELATÓRIO DE AUDITORIA (2 STORIES)*\n"
+            f"📊 *RELATÓRIO DE AUDITORIA COMPLETO*\n"
             f"👤 *Perfil:* `{relatorio['username']}`\n"
+            f"👥 *Seguidores:* `{followers_str}`\n"
+            f"❤️💬 *Engajamento Feed/Reels:* `{likes_comments_str}`\n"
+            f"📊 *Taxa de Engajamento (ER):* `{er_pct}%`\n"
+            f"🛡️ *Autenticidade:* {autenticidade}\n"
+            f"-----------------------------------\n"
             f"📲 *Média Views Stories:* `{avg_story_views:,}`\n"
             f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']}\n"
             f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story)\n"
@@ -303,5 +346,5 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Atualizado e Protegido!")
+    print("🚀 Bot Atualizado com Múltiplas Métricas!")
     app.run_polling()
