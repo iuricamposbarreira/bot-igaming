@@ -5,7 +5,14 @@ import os
 import threading
 from flask import Flask
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters
+)
 from avaliador import IGamingEvaluator
 
 # Configuração de Logs
@@ -17,8 +24,11 @@ RAPIDAPI_KEY = "44faf2cfd5msh084db8e1cf193e2p164debjsncb95a30318a5"
 
 evaluator = IGamingEvaluator(default_cpa=100.0)
 
+# Estados da Conversa Guiada
+USERNAME, VIEWS, PAIS, PCT_PAIS, HOMENS = range(5)
+
 # ----------------------------------------------------
-# Servidor Web Leve (Para o Render Free ficar sempre Online)
+# Servidor Web Leve (Para o Render ficar sempre Online)
 # ----------------------------------------------------
 server = Flask(__name__)
 
@@ -31,7 +41,7 @@ def run_flask():
     server.run(host="0.0.0.0", port=port)
 
 # ----------------------------------------------------
-# Funções do Bot do Telegram
+# Funções de Apoio
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip()
@@ -61,31 +71,204 @@ def buscar_dados_instagram_api(username: str):
     else:
         raise Exception(f"Erro na API ({response.status_code})")
 
+# ----------------------------------------------------
+# Comandos Principais
+# ----------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ajuda(update, context)
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "📖 *AVALIADOR DE TESTE DE 2 STORIES (SISTEMA FLEXÍVEL)*\n\n"
-        "⚡️ *Atalho Rápido (Apenas Views):*\n"
-        "`/avaliar @noemi_silipo 33859 33001 15103`\n\n"
-        "🎯 *Avaliação Detalhada (Com Prints):*\n"
-        "`/avaliar @noemi_silipo 33859 33001 15103 pais=it %pais=94.6 homens=15.9`"
+        "📖 *AVALIADOR DE TESTE DE IGAMING*\n\n"
+        "🎯 *Modo Guiado (Passo a Passo):*\n"
+        "Escreve apenas `/avaliar` para responderes às perguntas uma a uma!\n\n"
+        "⚡️ *Atalho Rápido (Tudo em 1 linha):*\n"
+        "`/avaliar @noemi_silipo 33859 33001 15103`\n"
+        "`/avaliar @noemi_silipo 33859 33001 15103 pais=it %pais=94.6 homens=15.9`\n\n"
+        "❌ *Cancelar:* Escreve `/cancelar` a qualquer momento para anular o questionário."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def avaliar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = " ".join(context.args)
-    if not text:
-        await update.message.reply_text("❌ Envia o username e as views! Escreve `/ajuda` para ver o guia.", parse_mode="Markdown")
-        return
+# ----------------------------------------------------
+# MODO GUIADO (PASSO A PASSO)
+# ----------------------------------------------------
+async def iniciar_guiado_ou_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Se o utilizador enviou argumentos na mesma linha, usa o modo rápido
+    if context.args:
+        return await avaliar_rapido(update, context)
+    
+    # Caso contrário, inicia o modo guiado
+    context.user_data.clear()
+    await update.message.reply_text(
+        "📝 *MODO GUIADO DE AVALIAÇÃO*\n\n"
+        "1️⃣ *Qual é o Username do Instagram?*\n\n"
+        "👉 *Exemplo:* `@noemi_silipo`\n"
+        "*(Escreve com o @ no início)*",
+        parse_mode="Markdown"
+    )
+    return USERNAME
 
+async def receber_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text.startswith("@"):
+        text = "@" + text
+        
+    context.user_data['username'] = text
+    await update.message.reply_text(
+        f"✅ Username: `{text}`\n\n"
+        "2️⃣ *Quais são as Views dos Stories?*\n"
+        "Podes mandar vários números separados por espaço para o bot calcular a média.\n\n"
+        "👉 *Exemplo:* `33859 33001 15103`",
+        parse_mode="Markdown"
+    )
+    return VIEWS
+
+async def receber_views(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    views_list = [int(v) for v in re.findall(r'\d+', text)]
+    
+    if not views_list:
+        await update.message.reply_text(
+            "❌ Não encontrei nenhum número de views válido.\n"
+            "👉 *Exemplo correto:* `33859 33001 15103`",
+            parse_mode="Markdown"
+        )
+        return VIEWS
+
+    context.user_data['views_list'] = views_list
+    avg_views = sum(views_list) // len(views_list)
+    context.user_data['avg_views'] = avg_views
+
+    await update.message.reply_text(
+        f"✅ Views processadas (Média: `{avg_views:,}`)\n\n"
+        "3️⃣ *Qual é o País principal da audiência?*\n"
+        "Escreve a sigla ou o nome do país.\n\n"
+        "👉 *Exemplo:* `IT` (ou `Portugal`, `Alemanha`, `BR`)",
+        parse_mode="Markdown"
+    )
+    return PAIS
+
+async def receber_pais(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    context.user_data['pais'] = text
+    
+    await update.message.reply_text(
+        f"✅ País: `{text.upper()}`\n\n"
+        "4️⃣ *Qual é a Percentagem (%) desse País?*\n"
+        "Apenas o número da percentagem.\n\n"
+        "👉 *Exemplo:* `85` (ou `94.6`)",
+        parse_mode="Markdown"
+    )
+    return PCT_PAIS
+
+async def receber_pct_pais(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.replace("%", "").replace(",", ".").strip()
+    try:
+        pct = float(text)
+        context.user_data['pct_pais'] = pct
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Por favor, insere apenas um número.\n"
+            "👉 *Exemplo:* `85` ou `94.6`",
+            parse_mode="Markdown"
+        )
+        return PCT_PAIS
+
+    await update.message.reply_text(
+        f"✅ % País: `{pct}%`\n\n"
+        "5️⃣ *Qual é a Percentagem (%) de Homens?*\n"
+        "Apenas o número da percentagem de homens.\n\n"
+        "👉 *Exemplo:* `35` (ou `15.9`)",
+        parse_mode="Markdown"
+    )
+    return HOMENS
+
+async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.replace("%", "").replace(",", ".").strip()
+    try:
+        pct_homens = float(text)
+        context.user_data['pct_homens'] = pct_homens
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Por favor, insere apenas um número.\n"
+            "👉 *Exemplo:* `35` ou `15.9`",
+            parse_mode="Markdown"
+        )
+        return HOMENS
+
+    username = context.user_data['username']
+    views_list = context.user_data['views_list']
+    avg_story_views = context.user_data['avg_views']
+    pais = context.user_data['pais']
+    pct_pais = context.user_data['pct_pais']
+
+    msg_espera = await update.message.reply_text("🔎 *A extrair dados e calcular viabilidade do teste...*", parse_mode="Markdown")
+
+    try:
+        followers, avg_likes, avg_comments = buscar_dados_instagram_api(username)
+
+        relatorio = evaluator.evaluate_profile(
+            username=username,
+            followers=followers,
+            avg_likes=avg_likes,
+            avg_comments=avg_comments,
+            story_views=avg_story_views,
+            views_list=views_list,
+            pct_homens=pct_homens,
+            pais=pais,
+            pct_pais=pct_pais
+        )
+        
+        resposta = (
+            f"📊 *RELATÓRIO DE AUDITORIA (2 STORIES)*\n"
+            f"👤 *Perfil:* `{relatorio['username']}` | 👥 `{followers:,}` segs\n"
+            f"📲 *Média Views Stories:* `{avg_story_views:,}`\n"
+            f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']}\n"
+            f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story)\n"
+            f"-----------------------------------\n"
+            f"Status: {relatorio['status_emoji']} *{relatorio['status_text']}*\n"
+            f"⚠️ Índice de Risco: *{relatorio['risk_index']}*\n\n"
+            f"📈 *FTDs Estimados:* `~{relatorio['expected_ftds']} depósitos`\n"
+            f"🔗 *Cliques Mínimos Esperados:* `{relatorio['expected_clicks']} cliques`\n"
+            f"💡 *Custo Estimado/View Útil:* `€{relatorio['cpv_qualificado']}/view`\n"
+            f"💶 *Retorno Esperado em CPA:* `€{relatorio['projected_revenue_eur']:,.2f}`\n\n"
+            f"🎬 *VALOR RECOMENDADO PARA TESTE (2 STORIES):*\n"
+            f"💰 *Oferta Inicial Recomendada:* `€{relatorio['pack_2_stories_suggested']:,.2f}` (Total)\n"
+            f"🛑 *Preço Teto Máximo:* `€{relatorio['pack_2_stories_max']:,.2f}` (Total)\n"
+            f"-----------------------------------\n"
+            f"📋 *Decisão:* {relatorio['recommendation']}\n"
+        )
+
+        if relatorio['warnings']:
+            resposta += "\n🚨 *Alertas de Risco / Anomalias:*\n"
+            for w in relatorio['warnings']:
+                resposta += f"• {w}\n"
+
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_espera.message_id)
+        await update.message.reply_text(resposta, parse_mode="Markdown")
+
+    except Exception as e:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_espera.message_id)
+        await update.message.reply_text(f"❌ *Erro:* {str(e)}", parse_mode="Markdown")
+
+    return ConversationHandler.END
+
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("🚫 Avaliação cancelada.", parse_mode="Markdown")
+    return ConversationHandler.END
+
+# ----------------------------------------------------
+# Modo Rápido (Se colar tudo na mesma linha)
+# ----------------------------------------------------
+async def avaliar_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
     username_match = re.search(r'@[A-Za-z0-9_.]+', text)
     if not username_match:
         await update.message.reply_text("❌ Não foi encontrado o username com `@`.", parse_mode="Markdown")
         return
-    username = username_match.group(0)
 
+    username = username_match.group(0)
     raw_tokens = text.replace(username, "").split()
     views_list = []
     
@@ -164,8 +347,22 @@ if __name__ == '__main__':
     t.start()
 
     app = ApplicationBuilder().token(TOKEN_BOT).build()
+    
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("avaliar", iniciar_guiado_ou_rapido)],
+        states={
+            USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_username)],
+            VIEWS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_views)],
+            PAIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_pais)],
+            PCT_PAIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_pct_pais)],
+            HOMENS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_homens_e_gerar_relatorio)],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
-    app.add_handler(CommandHandler("avaliar", avaliar))
-    print("🚀 Bot com Servidor Web Ativo na Nuvem!")
+    app.add_handler(conv_handler)
+
+    print("🚀 Bot Atualizado com Modo Guiado!")
     app.run_polling()
