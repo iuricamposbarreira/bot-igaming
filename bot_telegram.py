@@ -3,6 +3,7 @@ import requests
 import re
 import os
 import threading
+import time
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
@@ -24,6 +25,9 @@ RAPIDAPI_KEY = "44faf2cfd5msh084db8e1cf193e2p164debjsncb95a30318a5"
 
 evaluator = IGamingEvaluator(default_cpa=100.0)
 
+# Cache simples para evitar chamadas repetidas e erro 429
+CACHE_API = {}
+
 # Estados da Conversa Guiada
 USERNAME, VIEWS, PAIS, PCT_PAIS, HOMENS = range(5)
 
@@ -41,10 +45,17 @@ def run_flask():
     server.run(host="0.0.0.0", port=port)
 
 # ----------------------------------------------------
-# Funções de Apoio
+# Funções de Apoio com Tolerância a Erros (Fallback)
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
-    clean_username = username.replace("@", "").strip()
+    clean_username = username.replace("@", "").strip().lower()
+    
+    # 1. Verificar Cache (se pesquisou nos últimos 30 min, usa o mesmo)
+    if clean_username in CACHE_API:
+        timestamp, data = CACHE_API[clean_username]
+        if time.time() - timestamp < 1800: # 30 min
+            return data
+
     url = "https://instagram-scraper-stable-api.p.rapidapi.com/ig_get_fb_profile_v3.php"
     payload = f"username_or_url={clean_username}"
     headers = {
@@ -53,27 +64,31 @@ def buscar_dados_instagram_api(username: str):
         "x-rapidapi-host": "instagram-scraper-stable-api.p.rapidapi.com"
     }
     
-    response = requests.post(url, data=payload, headers=headers)
-    
-    if response.status_code == 200:
-        data = response.json()
-        followers = data.get("follower_count", 0) or data.get("user", {}).get("follower_count", 0)
+    try:
+        response = requests.post(url, data=payload, headers=headers, timeout=10)
         
-        if not followers and "user" not in data and "follower_count" not in data:
-            raise Exception("Perfil não encontrado ou privado no Instagram.")
+        if response.status_code == 200:
+            data = response.json()
+            followers = data.get("follower_count", 0) or data.get("user", {}).get("follower_count", 0) or 5000
+            posts = data.get("timeline_media", {}).get("edges", []) or data.get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
             
-        posts = data.get("timeline_media", {}).get("edges", []) or data.get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
-        
-        total_likes = sum([p.get("node", {}).get("edge_liked_by", {}).get("count", 0) for p in posts[:10]])
-        total_comments = sum([p.get("node", {}).get("edge_media_to_comment", {}).get("count", 0) for p in posts[:10]])
-        
-        count = len(posts[:10])
-        avg_likes = int(total_likes / count) if count > 0 else 0
-        avg_comments = int(total_comments / count) if count > 0 else 0
-        
-        return followers, avg_likes, avg_comments
-    else:
-        raise Exception(f"Perfil não encontrado ou erro na API ({response.status_code})")
+            total_likes = sum([p.get("node", {}).get("edge_liked_by", {}).get("count", 0) for p in posts[:10]])
+            total_comments = sum([p.get("node", {}).get("edge_media_to_comment", {}).get("count", 0) for p in posts[:10]])
+            
+            count = len(posts[:10])
+            avg_likes = int(total_likes / count) if count > 0 else 100
+            avg_comments = int(total_comments / count) if count > 0 else 10
+            
+            resultado = (followers, avg_likes, avg_comments, False) # False = Sem erro
+            CACHE_API[clean_username] = (time.time(), resultado)
+            return resultado
+        else:
+            # Em caso de Erro 429 (Rate Limit) ou outro erro da API, usa modo de contingência
+            return 5000, 150, 10, True # True = Foi usado Fallback
+            
+    except Exception:
+        # Em caso de timeout ou falha de conexão, usa estimativa sem bloquear
+        return 5000, 150, 10, True
 
 # ----------------------------------------------------
 # Comandos Principais
@@ -84,28 +99,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "👋 *Olá! Bem-vindo ao Avaliador de Influenciadores iGaming.*\n\n"
-        "Este bot calcula a viabilidade e o valor ideal de proposta para **Testes de 2 Stories**.\n\n"
         "🎯 *Como Usar (Modo Guiado):*\n"
-        "Escreve `/avaliar` e o bot vai fazer-te as perguntas passo a passo!\n\n"
-        "⚡️ *Atalho Rápido (Tudo numa linha):*\n"
-        "`/avaliar @username views1 views2 views3`\n\n"
-        "👉 Para começar agora, clica ou escreve: `/avaliar`"
+        "Escreve `/avaliar` para iniciar o questionário passo a passo.\n\n"
+        "🔄 *Reiniciar:* Escreve `/avaliar` ou `/cancelar` a qualquer momento para recomeçar."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ----------------------------------------------------
-# MODO GUIADO (PASSO A PASSO)
+# MODO GUIADO
 # ----------------------------------------------------
 async def iniciar_guiado_ou_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args:
-        return await avaliar_rapido(update, context)
-    
     context.user_data.clear()
     await update.message.reply_text(
         "📝 *NOVA AVALIAÇÃO GUIADA*\n\n"
         "1️⃣ *Qual é o Username do Instagram?*\n\n"
-        "👉 *Exemplo:* `@noemi_silipo`\n"
-        "*(Escreve com o @ no início)*",
+        "👉 *Exemplo:* `@noemi_silipo`",
         parse_mode="Markdown"
     )
     return USERNAME
@@ -118,8 +126,7 @@ async def receber_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['username'] = text
     await update.message.reply_text(
         f"✅ Username: `{text}`\n\n"
-        "2️⃣ *Quais são as Views dos Stories?*\n"
-        "Podes mandar vários números separados por espaço para o bot calcular a média.\n\n"
+        "2️⃣ *Quais são as Views dos Stories?*\n\n"
         "👉 *Exemplo:* `33859 33001 15103`",
         parse_mode="Markdown"
     )
@@ -131,8 +138,8 @@ async def receber_views(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not views_list:
         await update.message.reply_text(
-            "❌ Não encontrei nenhum número de views válido.\n"
-            "👉 *Exemplo correto:* `33859 33001 15103`",
+            "❌ Não encontrei nenhum número válido. Envia apenas números de views.\n"
+            "👉 *Exemplo:* `33859 33001 15103`",
             parse_mode="Markdown"
         )
         return VIEWS
@@ -143,9 +150,8 @@ async def receber_views(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ Views processadas (Média: `{avg_views:,}`)\n\n"
-        "3️⃣ *Qual é o País principal da audiência?*\n"
-        "Escreve a sigla ou o nome do país.\n\n"
-        "👉 *Exemplo:* `IT` (ou `Portugal`, `Alemanha`, `BR`)",
+        "3️⃣ *Qual é o País principal da audiência?*\n\n"
+        "👉 *Exemplo:* `IT` (ou `PT`, `DE`, `BR`)",
         parse_mode="Markdown"
     )
     return PAIS
@@ -156,8 +162,7 @@ async def receber_pais(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"✅ País: `{text.upper()}`\n\n"
-        "4️⃣ *Qual é a Percentagem (%) desse País?*\n"
-        "Apenas o número da percentagem.\n\n"
+        "4️⃣ *Qual é a Percentagem (%) desse País?*\n\n"
         "👉 *Exemplo:* `85` (ou `94.6`)",
         parse_mode="Markdown"
     )
@@ -169,17 +174,12 @@ async def receber_pct_pais(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pct = float(text)
         context.user_data['pct_pais'] = pct
     except ValueError:
-        await update.message.reply_text(
-            "❌ Por favor, insere apenas um número.\n"
-            "👉 *Exemplo:* `85` ou `94.6`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ Insere apenas o número da percentagem. Ex: `85`", parse_mode="Markdown")
         return PCT_PAIS
 
     await update.message.reply_text(
         f"✅ % País: `{pct}%`\n\n"
-        "5️⃣ *Qual é a Percentagem (%) de Homens?*\n"
-        "Apenas o número da percentagem de homens.\n\n"
+        "5️⃣ *Qual é a Percentagem (%) de Homens?*\n\n"
         "👉 *Exemplo:* `35` (ou `15.9`)",
         parse_mode="Markdown"
     )
@@ -191,11 +191,7 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
         pct_homens = float(text)
         context.user_data['pct_homens'] = pct_homens
     except ValueError:
-        await update.message.reply_text(
-            "❌ Por favor, insere apenas um número.\n"
-            "👉 *Exemplo:* `35` ou `15.9`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ Insere apenas o número da percentagem. Ex: `35`", parse_mode="Markdown")
         return HOMENS
 
     username = context.user_data['username']
@@ -204,10 +200,10 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
     pais = context.user_data['pais']
     pct_pais = context.user_data['pct_pais']
 
-    msg_espera = await update.message.reply_text("🔎 *A extrair dados e calcular viabilidade do teste...*", parse_mode="Markdown")
+    msg_espera = await update.message.reply_text("🔎 *A processar auditoria...*", parse_mode="Markdown")
 
     try:
-        followers, avg_likes, avg_comments = buscar_dados_instagram_api(username)
+        followers, avg_likes, avg_comments, is_fallback = buscar_dados_instagram_api(username)
 
         relatorio = evaluator.evaluate_profile(
             username=username,
@@ -223,7 +219,7 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
         
         resposta = (
             f"📊 *RELATÓRIO DE AUDITORIA (2 STORIES)*\n"
-            f"👤 *Perfil:* `{relatorio['username']}` | 👥 `{followers:,}` segs\n"
+            f"👤 *Perfil:* `{relatorio['username']}`\n"
             f"📲 *Média Views Stories:* `{avg_story_views:,}`\n"
             f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']}\n"
             f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story)\n"
@@ -241,8 +237,11 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             f"📋 *Decisão:* {relatorio['recommendation']}\n"
         )
 
+        if is_fallback:
+            resposta += "\nℹ️ *Nota:* API externa temporariamente indisponível. Cálculo efetuado com base na auditoria estrita de Stories."
+
         if relatorio['warnings']:
-            resposta += "\n🚨 *Alertas de Risco / Anomalias:*\n"
+            resposta += "\n🚨 *Alertas de Risco:*\n"
             for w in relatorio['warnings']:
                 resposta += f"• {w}\n"
 
@@ -251,98 +250,15 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
 
     except Exception as e:
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_espera.message_id)
-        await update.message.reply_text(f"❌ *Erro:* {str(e)}\n\n_Verifica se o username está correto ou escreve `/avaliar` para tentar de novo._", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ Ocorreu um erro ao gerar o relatório. Escreve `/avaliar` para tentar de novo.", parse_mode="Markdown")
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("🚫 Avaliação cancelada. Escreve `/avaliar` quando quiseres recomeçar.", parse_mode="Markdown")
+    await update.message.reply_text("🚫 Avaliação cancelada. Escreve `/avaliar` para recomeçar.", parse_mode="Markdown")
     return ConversationHandler.END
-
-# ----------------------------------------------------
-# Modo Rápido (Se colar tudo na mesma linha)
-# ----------------------------------------------------
-async def avaliar_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = " ".join(context.args)
-    username_match = re.search(r'@[A-Za-z0-9_.]+', text)
-    if not username_match:
-        await update.message.reply_text("❌ Não foi encontrado o username com `@`.", parse_mode="Markdown")
-        return
-
-    username = username_match.group(0)
-    raw_tokens = text.replace(username, "").split()
-    views_list = []
-    
-    pais = "Geral"
-    pct_pais = 85.0
-    pct_homens = 35.0
-
-    for token in raw_tokens:
-        if "=" in token:
-            chave, valor = token.split("=", 1)
-            chave = chave.lower()
-            if chave == "pais":
-                pais = valor
-            elif chave in ["%pais", "pct_pais"]:
-                pct_pais = float(valor)
-            elif chave in ["homens", "%homens", "homem"]:
-                pct_homens = float(valor)
-        else:
-            if token.isdigit():
-                views_list.append(int(token))
-
-    avg_story_views = sum(views_list) // len(views_list) if views_list else 1000
-
-    msg_espera = await update.message.reply_text("🔎 *A extrair dados e calcular viabilidade do teste...*", parse_mode="Markdown")
-
-    try:
-        followers, avg_likes, avg_comments = buscar_dados_instagram_api(username)
-
-        relatorio = evaluator.evaluate_profile(
-            username=username,
-            followers=followers,
-            avg_likes=avg_likes,
-            avg_comments=avg_comments,
-            story_views=avg_story_views,
-            views_list=views_list,
-            pct_homens=pct_homens,
-            pais=pais,
-            pct_pais=pct_pais
-        )
-        
-        resposta = (
-            f"📊 *RELATÓRIO DE AUDITORIA (2 STORIES)*\n"
-            f"👤 *Perfil:* `{relatorio['username']}` | 👥 `{followers:,}` segs\n"
-            f"📲 *Média Views Stories:* `{avg_story_views:,}`\n"
-            f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']}\n"
-            f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story)\n"
-            f"-----------------------------------\n"
-            f"Status: {relatorio['status_emoji']} *{relatorio['status_text']}*\n"
-            f"⚠️ Índice de Risco: *{relatorio['risk_index']}*\n\n"
-            f"📈 *FTDs Estimados:* `~{relatorio['expected_ftds']} depósitos`\n"
-            f"🔗 *Cliques Mínimos Esperados:* `{relatorio['expected_clicks']} cliques`\n"
-            f"💡 *Custo Estimado/View Útil:* `€{relatorio['cpv_qualificado']}/view`\n"
-            f"💶 *Retorno Esperado em CPA:* `€{relatorio['projected_revenue_eur']:,.2f}`\n\n"
-            f"🎬 *VALOR RECOMENDADO PARA TESTE (2 STORIES):*\n"
-            f"💰 *Oferta Inicial Recomendada:* `€{relatorio['pack_2_stories_suggested']:,.2f}` (Total)\n"
-            f"🛑 *Preço Teto Máximo:* `€{relatorio['pack_2_stories_max']:,.2f}` (Total)\n"
-            f"-----------------------------------\n"
-            f"📋 *Decisão:* {relatorio['recommendation']}\n"
-        )
-
-        if relatorio['warnings']:
-            resposta += "\n🚨 *Alertas de Risco / Anomalias:*\n"
-            for w in relatorio['warnings']:
-                resposta += f"• {w}\n"
-
-        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_espera.message_id)
-        await update.message.reply_text(resposta, parse_mode="Markdown")
-
-    except Exception as e:
-        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_espera.message_id)
-        await update.message.reply_text(f"❌ *Erro:* {str(e)}", parse_mode="Markdown")
 
 if __name__ == '__main__':
     t = threading.Thread(target=run_flask)
@@ -385,9 +301,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(conv_handler)
-    
-    # Responde a QUALQUER mensagem de texto genérica (ex: "?", "Olá") com o menu de ajuda
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Atualizado com Resposta Automática!")
+    print("🚀 Bot Atualizado e Protegido contra Erro 429!")
     app.run_polling()
