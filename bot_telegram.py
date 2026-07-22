@@ -30,7 +30,7 @@ CACHE_API = {}
 USERNAME, VIEWS, PAIS, PCT_PAIS, HOMENS = range(5)
 
 # ----------------------------------------------------
-# Servidor Web Leve (Para o Render ficar sempre Online)
+# Servidor Web Leve (Render)
 # ----------------------------------------------------
 server = Flask(__name__)
 
@@ -46,7 +46,7 @@ def run_flask():
         print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
-# API Instagram
+# API Instagram - Leitura Direta de Seguidores e Engajamento
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip().lower()
@@ -63,21 +63,21 @@ def buscar_dados_instagram_api(username: str):
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=8)
+        response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            data = response.json()
-            user_data = data.get("data") or data.get("user") or data
+            raw = response.json()
             
-            followers = 0
-            if isinstance(user_data, dict):
-                followers = (
-                    user_data.get("follower_count") or 
-                    user_data.get("followers_count") or
-                    user_data.get("followers") or 0
-                )
+            # Tenta encontrar o nó principal do perfil
+            d = raw.get("data") or raw.get("user") or raw
             
-            if followers and followers > 0:
+            followers = (
+                d.get("follower_count") or 
+                d.get("followers_count") or 
+                d.get("followers") or 0
+            )
+            
+            if followers > 0:
                 avg_likes = int(followers * 0.03)
                 avg_comments = int(avg_likes * 0.05)
                 resultado = (followers, avg_likes, avg_comments, False)
@@ -90,7 +90,7 @@ def buscar_dados_instagram_api(username: str):
         return 0, 0, 0, True
 
 # ----------------------------------------------------
-# Comandos Principais e Respostas Automáticas
+# Comandos
 # ----------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ajuda(update, context)
@@ -198,7 +198,7 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
     pais = context.user_data['pais']
     pct_pais = context.user_data['pct_pais']
 
-    msg_espera = await update.message.reply_text("🔎 *A processar auditoria...*", parse_mode="Markdown")
+    msg_espera = await update.message.reply_text("🔎 *A consultar Instagram e a gerar auditoria...*", parse_mode="Markdown")
 
     try:
         followers, avg_likes, avg_comments, is_fallback = buscar_dados_instagram_api(username)
@@ -215,9 +215,20 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             pct_pais=pct_pais
         )
         
+        # Formatação explícita dos seguidores
+        if followers > 0:
+            txt_seguidores = f"{followers:,}"
+            er_val = round(((avg_likes + avg_comments) / followers) * 100, 2)
+            txt_er = f"{er_val}%"
+        else:
+            txt_seguidores = "Não obtido (Perfil privado/API)"
+            txt_er = "N/A"
+
         resposta = (
             f"📊 *RELATÓRIO DE AUDITORIA (2 STORIES)*\n"
             f"👤 *Perfil:* `{relatorio['username']}`\n"
+            f"👥 *Seguidores Instagram:* `{txt_seguidores}`\n"
+            f"📊 *Engajamento Est.:* `{txt_er}`\n"
             f"📲 *Média Views Stories:* `{avg_story_views:,}`\n"
             f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']}\n"
             f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story)\n"
@@ -298,5 +309,5 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Restaurado!")
+    print("🚀 Bot Atualizado!")
     app.run_polling()
