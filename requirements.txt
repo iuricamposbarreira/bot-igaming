@@ -1,4 +1,3 @@
-python-telegram-bot[rate-limit]
+python-telegram-bot
 requests
 flask
-gunicorn
