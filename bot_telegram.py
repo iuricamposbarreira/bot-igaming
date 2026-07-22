@@ -25,10 +25,8 @@ RAPIDAPI_KEY = "44faf2cfd5msh084db8e1cf193e2p164debjsncb95a30318a5"
 
 evaluator = IGamingEvaluator(default_cpa=100.0)
 
-# Cache simples para evitar chamadas repetidas
 CACHE_API = {}
 
-# Estados da Conversa Guiada
 USERNAME, VIEWS, PAIS, PCT_PAIS, HOMENS = range(5)
 
 # ----------------------------------------------------
@@ -48,12 +46,11 @@ def run_flask():
         print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
-# Funções de Apoio com Tolerância a Erros (Fallback)
+# API Instagram
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip().lower()
     
-    # Cache em memória (24h)
     if clean_username in CACHE_API:
         timestamp, data = CACHE_API[clean_username]
         if time.time() - timestamp < 86400:
