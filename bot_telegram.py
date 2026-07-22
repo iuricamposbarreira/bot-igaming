@@ -59,7 +59,6 @@ def buscar_dados_instagram_api(username: str):
         data = response.json()
         followers = data.get("follower_count", 0) or data.get("user", {}).get("follower_count", 0)
         
-        # Se não encontrar seguidores ou perfil inválido
         if not followers and "user" not in data and "follower_count" not in data:
             raise Exception("Perfil não encontrado ou privado no Instagram.")
             
@@ -84,13 +83,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "📖 *AVALIADOR DE TESTE DE IGAMING*\n\n"
-        "🎯 *Modo Guiado (Passo a Passo):*\n"
-        "Escreve apenas `/avaliar` para responderes às perguntas uma a uma!\n\n"
-        "⚡️ *Atalho Rápido (Tudo em 1 linha):*\n"
-        "`/avaliar @noemi_silipo 33859 33001 15103`\n"
-        "`/avaliar @noemi_silipo 33859 33001 15103 pais=it %pais=94.6 homens=15.9`\n\n"
-        "❌ *Cancelar / Reiniciar:* Escreve `/avaliar` a qualquer momento para recomeçar do zero!"
+        "👋 *Olá! Bem-vindo ao Avaliador de Influenciadores iGaming.*\n\n"
+        "Este bot calcula a viabilidade e o valor ideal de proposta para **Testes de 2 Stories**.\n\n"
+        "🎯 *Como Usar (Modo Guiado):*\n"
+        "Escreve `/avaliar` e o bot vai fazer-te as perguntas passo a passo!\n\n"
+        "⚡️ *Atalho Rápido (Tudo numa linha):*\n"
+        "`/avaliar @username views1 views2 views3`\n\n"
+        "👉 Para começar agora, clica ou escreve: `/avaliar`"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -98,11 +97,9 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MODO GUIADO (PASSO A PASSO)
 # ----------------------------------------------------
 async def iniciar_guiado_ou_rapido(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Se o utilizador enviou argumentos na mesma linha, usa o modo rápido
     if context.args:
         return await avaliar_rapido(update, context)
     
-    # Caso contrário, limpa dados anteriores e inicia/reinicia o modo guiado
     context.user_data.clear()
     await update.message.reply_text(
         "📝 *NOVA AVALIAÇÃO GUIADA*\n\n"
@@ -388,6 +385,9 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(conv_handler)
+    
+    # Responde a QUALQUER mensagem de texto genérica (ex: "?", "Olá") com o menu de ajuda
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ajuda))
 
-    print("🚀 Bot Atualizado com Suporte a Reinício!")
+    print("🚀 Bot Atualizado com Resposta Automática!")
     app.run_polling()
