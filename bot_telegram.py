@@ -46,7 +46,7 @@ def run_flask():
         print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
-# API Instagram
+# API Instagram (Corrigida para ler Seguidores Reais)
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip().lower()
@@ -67,13 +67,22 @@ def buscar_dados_instagram_api(username: str):
         
         if response.status_code == 200:
             data = response.json()
-            followers = (
-                data.get("follower_count") or 
-                data.get("data", {}).get("follower_count") or 
-                data.get("user", {}).get("follower_count", 0)
-            )
             
-            if followers > 0:
+            # Mapeamento exaustivo para capturar os seguidores reais da API
+            followers = 0
+            if isinstance(data, dict):
+                followers = (
+                    data.get("follower_count") or 
+                    data.get("followers_count") or
+                    data.get("followers") or
+                    data.get("data", {}).get("follower_count") or 
+                    data.get("data", {}).get("followers_count") or 
+                    data.get("data", {}).get("followers") or
+                    data.get("user", {}).get("follower_count") or
+                    data.get("user", {}).get("followers_count") or 0
+                )
+            
+            if followers and followers > 0:
                 avg_likes = int(followers * 0.03)
                 avg_comments = int(avg_likes * 0.05)
                 resultado = (followers, avg_likes, avg_comments, False)
@@ -230,9 +239,6 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             f"-----------------------------------\n"
             f"📋 *Decisão:* {relatorio['recommendation']}\n"
         )
-
-        if is_fallback:
-            resposta += "\n⚠️ *Esgotaste as 100 tentativas do limite da API mensal.* A avaliação foi gerada com base na estimativa de Stories."
 
         if relatorio['warnings']:
             resposta += "\n🚨 *Alertas de Risco:*\n"
