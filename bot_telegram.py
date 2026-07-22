@@ -1,10 +1,14 @@
 import logging
 import requests
 import re
+import os
+import threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from avaliador import IGamingEvaluator
 
+# Configuração de Logs
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -13,6 +17,22 @@ RAPIDAPI_KEY = "44faf2cfd5msh084db8e1cf193e2p164debjsncb95a30318a5"
 
 evaluator = IGamingEvaluator(default_cpa=100.0)
 
+# ----------------------------------------------------
+# Servidor Web Leve (Para o Render Free ficar sempre Online)
+# ----------------------------------------------------
+server = Flask(__name__)
+
+@server.route('/')
+def home():
+    return "Bot iGaming Online 24/7!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    server.run(host="0.0.0.0", port=port)
+
+# ----------------------------------------------------
+# Funções do Bot do Telegram
+# ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
     clean_username = username.replace("@", "").strip()
     url = "https://instagram-scraper-stable-api.p.rapidapi.com/ig_get_fb_profile_v3.php"
@@ -139,9 +159,13 @@ async def avaliar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ *Erro:* {str(e)}", parse_mode="Markdown")
 
 if __name__ == '__main__':
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+
     app = ApplicationBuilder().token(TOKEN_BOT).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(CommandHandler("avaliar", avaliar))
-    print("🚀 Bot Atualizado e Pronto!")
+    print("🚀 Bot com Servidor Web Ativo na Nuvem!")
     app.run_polling()
