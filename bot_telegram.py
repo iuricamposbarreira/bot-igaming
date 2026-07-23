@@ -442,14 +442,19 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             txt_seguidores = "Não obtido (falha na API — ver logs)"
             txt_er = "N/A"
 
+        # Etiqueta de proveniência: dados confirmados via API vs. inseridos manualmente.
+        # Isto não muda os cálculos — só deixa claro no relatório o que é verificado
+        # e o que é autodeclarado, para quem decide saber onde confiar mais.
+        origem_seguidores = "✅ via API" if followers > 0 else "⚠️ falhou"
+
         resposta = (
             f"📊 *RELATÓRIO DE AUDITORIA (2 STORIES)*\n"
             f"👤 *Perfil:* `{relatorio['username']}`\n"
-            f"👥 *Seguidores Instagram:* `{txt_seguidores}`\n"
-            f"📊 *Engajamento Est.:* `{txt_er}`\n"
-            f"📲 *Média Views Stories:* `{avg_story_views:,}`\n"
-            f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']}\n"
-            f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story)\n"
+            f"👥 *Seguidores Instagram:* `{txt_seguidores}` ({origem_seguidores})\n"
+            f"📊 *Engajamento Est.:* `{txt_er}` ({origem_seguidores})\n"
+            f"📲 *Média Views Stories:* `{avg_story_views:,}` (✍️ autodeclarado)\n"
+            f"🌍 *País:* `{pais.upper()}` ({pct_pais}%) → *CPA:* €{relatorio['cpa_used']} (✍️ autodeclarado)\n"
+            f"👨 *Homens:* `{pct_homens}%` (~{relatorio['homens_absolutos']:,} homens/story) (✍️ autodeclarado)\n"
             f"-----------------------------------\n"
             f"Status: {relatorio['status_emoji']} *{relatorio['status_text']}*\n"
             f"⚠️ Índice de Risco: *{relatorio['risk_index']}*\n\n"

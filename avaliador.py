@@ -6,7 +6,7 @@ class IGamingEvaluator:
         # Definição de CPA por País
         cpa_dict = {
             "PT": 70.0, "PORTUGAL": 70.0,
-            "IT": 100.0, "ITALIA": 100.0, "ITALY": 100.0,
+            "IT": 170.0, "ITALIA": 170.0, "ITALY": 170.0,
             "DE": 170.0, "ALEMANHA": 170.0, "GERMANY": 170.0,
             "ES": 80.0, "ESPANHA": 80.0, "SPAIN": 80.0,
             "BR": 30.0, "BRASIL": 30.0, "BRAZIL": 30.0
@@ -49,22 +49,46 @@ class IGamingEvaluator:
             if engagement_rate < 0.5:
                 warnings.append("Engajamento no feed muito baixo em relação aos seguidores (<0.5%). Risco de seguidores inativos/falsos.")
                 risk_score += 25
-        elif followers > 10000 and story_to_follower_ratio < 8.0:
-            warnings.append("Volume de Views nos Stories muito baixo para o total de seguidores. Risco de seguidores comprados.")
+        # Limite recalibrado com base em campanhas reais (23/07/2026): perfis
+        # autênticos observados tinham rácio Views/Seguidores de 22-33%; um
+        # perfil confirmado como seguidores falsos tinha 13,8%. Threshold subido
+        # de 8% para 18% para apanhar esse caso. Amostra pequena (3 casos) —
+        # revisitar à medida que houver mais dados reais.
+        seguidores_suspeitos = False
+        if followers > 10000 and story_to_follower_ratio < 18.0:
+            warnings.append("Volume de Views nos Stories baixo para o total de seguidores. Risco de seguidores comprados/inativos.")
             risk_score += 30
+            seguidores_suspeitos = True
 
-        # 3. Análise de Género
-        if pct_homens < 25.0:
-            warnings.append(f"Público maioritariamente feminino ({100-pct_homens:.1f}%). Historicamente apresenta conversão reduzida em iGaming.")
+        # 3. Análise de Género — combinada com engagement real, não isolada.
+        # Nichos diferentes convertem de forma diferente (ex: lifestyle vs. moda),
+        # por isso um público feminino só é penalizado se o engagement real
+        # (likes/comentários vindos da API) também for fraco. Um perfil como o
+        # liikeez (91,6% mulheres, ótimo ROI real) não deve ser penalizado só
+        # pelo género quando o engagement mostra audiência genuína e ativa.
+        if pct_homens < 25.0 and engagement_rate < 1.0:
+            warnings.append(f"Público maioritariamente feminino ({100-pct_homens:.1f}%) combinado com engagement abaixo da média (1%). Historicamente este perfil apresenta conversão reduzida em iGaming.")
             risk_score += 15
 
         # ----------------------------------------------------
         # CÁLCULOS FINANCEIROS E PROJEÇÕES
         # ----------------------------------------------------
-        # Conversão estimada baseada nas views úteis
+        # Coeficientes recalibrados com base em 3 campanhas reais (23/07/2026):
+        # a taxa de cliques assumida (0,5%) estava a sobrestimar sempre — em
+        # perfis genuínos por ~1,4-3x, e em perfis de seguidores falsos por
+        # até 16x. Baixado para 0,25%, próximo da média dos casos genuínos.
+        # Amostra pequena — recalibrar de novo com mais dados reais.
         expected_ftds = round(max(1.0, views_uteis * 0.0008), 1) if views_uteis > 200 else (1.0 if views_uteis > 30 else 0.5)
-        expected_clicks = int(story_views * 0.005) if story_views > 1000 else max(10, int(story_views * 0.08))
-        
+        expected_clicks = int(story_views * 0.0025) if story_views > 1000 else max(10, int(story_views * 0.08))
+
+        # Penalização real (não só aviso) quando há sinal de seguidores
+        # falsos/inativos: no caso real observado, um perfil sinalizado assim
+        # gerou 0 FTDs apesar da fórmula prever ~18. Reduzimos a projeção em
+        # vez de só mostrar o aviso, para o número não continuar otimista.
+        if seguidores_suspeitos:
+            expected_ftds = round(expected_ftds * 0.3, 1)
+            expected_clicks = int(expected_clicks * 0.3)
+
         projected_revenue = expected_ftds * cpa
 
         # Proposta de Valores para Teste de 2 Stories
@@ -89,11 +113,12 @@ class IGamingEvaluator:
 
         cpv_qualificado = round(base_offer / max(1, views_uteis), 3)
 
+        publico_feminino_fraco = pct_homens < 30 and engagement_rate < 1.0
         recommendation = (
-            f"Público maioritariamente feminino ({100-pct_homens:.1f}%), mas o volume absoluto de audiência permite conversão. "
+            f"Público maioritariamente feminino ({100-pct_homens:.1f}%) com engagement abaixo da média, mas o volume absoluto de audiência permite conversão. "
             f"Propor Teste de 2 Stories entre €{int(base_offer)} e €{int(max_offer)}."
-            if pct_homens < 30 else
-            f"Público equilibrado. Avançar com proposta de Teste de 2 Stories até €{int(base_offer)}."
+            if publico_feminino_fraco else
+            f"Público com bom potencial de conversão. Avançar com proposta de Teste de 2 Stories até €{int(base_offer)}."
         )
 
         return {
