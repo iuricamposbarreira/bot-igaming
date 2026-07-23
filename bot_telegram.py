@@ -19,15 +19,33 @@ from avaliador import IGamingEvaluator
 # Configuração de Logs
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger("bot_igaming")
 
-TOKEN_BOT = "8944907729:AAE8_GZX4Mx3EIxG67AQ_hG7mzecx87dy8M"
-RAPIDAPI_KEY = "44faf2cfd5msh084db8e1cf193e2p164debjsncb95a30318a5"
+# ----------------------------------------------------
+# Credenciais (via variáveis de ambiente)
+# ----------------------------------------------------
+# IMPORTANTE: define estas variáveis no ambiente (Render > Environment) em vez
+# de as colocares no código. Se já expuseste o token/key antigos nalgum lado
+# (chat, repositório público, etc.), gera novos:
+#   - Telegram: fala com o @BotFather -> /revoke -> /token
+#   - RapidAPI: no painel da tua app, gera uma nova key
+TOKEN_BOT = os.environ.get("TOKEN_BOT")
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
+
+if not TOKEN_BOT or not RAPIDAPI_KEY:
+    raise RuntimeError(
+        "Faltam variáveis de ambiente TOKEN_BOT e/ou RAPIDAPI_KEY. "
+        "Define-as no teu serviço (Render > Environment) antes de arrancar o bot."
+    )
 
 evaluator = IGamingEvaluator(default_cpa=100.0)
 
 CACHE_API = {}
+CACHE_TTL_SECONDS = 6 * 60 * 60  # 6h em vez de 24h, para não "prender" dados errados durante um dia inteiro enquanto ajustas a API
 
 USERNAME, VIEWS, PAIS, PCT_PAIS, HOMENS = range(5)
+
+RAPIDAPI_HOST = "instagram-public-bulk-scraper.p.rapidapi.com"
 
 # ----------------------------------------------------
 # Servidor Web Leve (Render)
@@ -46,78 +64,245 @@ def run_flask():
         print(f"Aviso no servidor Flask: {e}")
 
 # ----------------------------------------------------
-# Procura Exaustiva de Seguidores no JSON
+# Procura Exaustiva de valores no JSON (genérico)
 # ----------------------------------------------------
-def extrair_seguidores(data):
+def _procurar_chave_numerica(data, chaves, _profundidade=0):
+    """
+    Percorre recursivamente um JSON (dict/list) à procura da primeira chave
+    (de uma lista de nomes possíveis) que contenha um número > 0, ou um dict
+    com sub-chave 'count'/'value'.
+    Devolve None se não encontrar nada (em vez de 0), para conseguirmos
+    distinguir "não encontrado" de "encontrado e é zero".
+    """
+    if _profundidade > 8:  # proteção contra JSON muito aninhado / recursão infinita
+        return None
+
     if isinstance(data, dict):
-        # Chaves mais comuns usadas em APIs do Instagram na RapidAPI
-        for key in ["follower_count", "followers_count", "followers", "edge_followed_by", "follower"]:
+        for key in chaves:
             if key in data:
                 val = data[key]
+                if isinstance(val, bool):
+                    continue
                 if isinstance(val, (int, float)) and val > 0:
                     return int(val)
-                if isinstance(val, dict) and "count" in val:
-                    return int(val["count"])
-        
-        for k, v in data.items():
+                if isinstance(val, dict):
+                    for sub_key in ("count", "value", "num"):
+                        if sub_key in val and isinstance(val[sub_key], (int, float)):
+                            return int(val[sub_key])
+                if isinstance(val, str) and val.isdigit():
+                    return int(val)
+
+        for v in data.values():
             if isinstance(v, (dict, list)):
-                res = extrair_seguidores(v)
-                if res > 0:
+                res = _procurar_chave_numerica(v, chaves, _profundidade + 1)
+                if res:
                     return res
+
     elif isinstance(data, list):
         for item in data:
-            res = extrair_seguidores(item)
-            if res > 0:
+            res = _procurar_chave_numerica(item, chaves, _profundidade + 1)
+            if res:
                 return res
-    return 0
+
+    return None
+
+
+def extrair_seguidores(data):
+    chaves = [
+        "follower_count", "followers_count", "followersCount",
+        "followers", "edge_followed_by", "follower", "n_followers",
+    ]
+    resultado = _procurar_chave_numerica(data, chaves)
+    return resultado or 0
+
+
+def extrair_seguindo(data):
+    chaves = ["following_count", "followingCount", "following", "edge_follow"]
+    resultado = _procurar_chave_numerica(data, chaves)
+    return resultado or 0
+
+
+def extrair_posts_para_engagement(data):
+    """
+    Tenta encontrar uma lista de posts/media recentes para calcular
+    engagement real (likes/comentários médios). Devolve (avg_likes, avg_comments)
+    ou (None, None) se não encontrar nada utilizável.
+    """
+    candidatos_chaves_lista = [
+        "edge_owner_to_timeline_media", "medias", "media", "posts",
+        "items", "recent_posts", "timeline_media",
+    ]
+
+    def procurar_lista(d, _prof=0):
+        if _prof > 8:
+            return None
+        if isinstance(d, dict):
+            for k in candidatos_chaves_lista:
+                if k in d:
+                    v = d[k]
+                    if isinstance(v, dict) and "edges" in v:
+                        v = v["edges"]
+                    if isinstance(v, list) and len(v) > 0:
+                        return v
+            for v in d.values():
+                if isinstance(v, (dict, list)):
+                    res = procurar_lista(v, _prof + 1)
+                    if res:
+                        return res
+        elif isinstance(d, list):
+            for item in d:
+                res = procurar_lista(item, _prof + 1)
+                if res:
+                    return res
+        return None
+
+    posts = procurar_lista(data)
+    if not posts:
+        return None, None
+
+    likes_chaves = ["like_count", "likes_count", "likes", "edge_liked_by", "edge_media_preview_like"]
+    comments_chaves = ["comment_count", "comments_count", "comments", "edge_media_to_comment"]
+
+    total_likes = []
+    total_comments = []
+    for post in posts[:12]:  # não vale a pena olhar para mais que ~12 posts
+        node = post.get("node", post) if isinstance(post, dict) else post
+        likes = _procurar_chave_numerica(node, likes_chaves)
+        comments = _procurar_chave_numerica(node, comments_chaves)
+        if likes is not None:
+            total_likes.append(likes)
+        if comments is not None:
+            total_comments.append(comments)
+
+    avg_likes = int(sum(total_likes) / len(total_likes)) if total_likes else None
+    avg_comments = int(sum(total_comments) / len(total_comments)) if total_comments else None
+    return avg_likes, avg_comments
+
+
+def parece_privado(data):
+    chaves = ["is_private", "isPrivate", "private"]
+    def procurar(d, _prof=0):
+        if _prof > 8:
+            return False
+        if isinstance(d, dict):
+            for k in chaves:
+                if k in d and isinstance(d[k], bool):
+                    return d[k]
+            for v in d.values():
+                if isinstance(v, (dict, list)):
+                    if procurar(v, _prof + 1):
+                        return True
+        elif isinstance(d, list):
+            for item in d:
+                if procurar(item, _prof + 1):
+                    return True
+        return False
+    return procurar(data)
+
 
 # ----------------------------------------------------
 # API Instagram
 # ----------------------------------------------------
 def buscar_dados_instagram_api(username: str):
+    """
+    Devolve (followers, avg_likes, avg_comments, is_fallback, motivo)
+    motivo é só para logging/diagnóstico, não é mostrado ao utilizador.
+    """
     clean_username = username.replace("@", "").strip().lower()
-    
+
     if clean_username in CACHE_API:
         timestamp, data = CACHE_API[clean_username]
-        if time.time() - timestamp < 86400:
+        if time.time() - timestamp < CACHE_TTL_SECONDS:
+            logger.info(f"[{clean_username}] A usar dados em cache.")
             return data
 
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "instagram-public-bulk-scraper.p.rapidapi.com"
+        "x-rapidapi-host": RAPIDAPI_HOST,
     }
 
-    # Testamos as variações de endpoints suportadas pelo provider
-    endpoints = [
-        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user_info?username={clean_username}",
-        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/info?username={clean_username}",
-        f"https://instagram-public-bulk-scraper.p.rapidapi.com/user/{clean_username}"
+    # Combinações de (path, nome do parâmetro de query) mais comuns nesta
+    # família de APIs de scraping de Instagram no RapidAPI. Se nenhuma
+    # funcionar, o diagnóstico abaixo vai dizer-te exatamente porquê
+    # (404 = path errado, 403 = não subscrito a esse endpoint, 200+sem dados =
+    # precisamos de ver o JSON real).
+    tentativas = [
+        ("/userinfo/", "username_or_id"),
+        ("/userinfo/", "username"),
+        ("/user_info", "username"),
+        ("/user/info", "username"),
+        ("/ig/user_info/", "username"),
+        ("/user/detailed_info", "username_or_id"),
     ]
 
-    for url in endpoints:
-        try:
-            logging.info(f"A tentar API: {url}")
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                json_data = response.json()
-                logging.info(f"Resposta JSON de {url}: {str(json_data)[:300]}")
-                
-                followers = extrair_seguidores(json_data)
-                
-                if followers > 0:
-                    avg_likes = int(followers * 0.03)
-                    avg_comments = int(avg_likes * 0.05)
-                    resultado = (followers, avg_likes, avg_comments, False)
-                    CACHE_API[clean_username] = (time.time(), resultado)
-                    logging.info(f"Seguidores encontrados: {followers}")
-                    return resultado
-            else:
-                logging.warning(f"API respondeu com status {response.status_code} em {url}")
-        except Exception as e:
-            logging.error(f"Erro no pedido API ({url}): {e}")
+    ultimo_status = None
+    ultimo_corpo = None
 
-    return 0, 0, 0, True
+    for path, param_name in tentativas:
+        url = f"https://{RAPIDAPI_HOST}{path}"
+        params = {param_name: clean_username}
+        try:
+            logger.info(f"[{clean_username}] A tentar {url} com {params}")
+            response = requests.get(url, headers=headers, params=params, timeout=12)
+            ultimo_status = response.status_code
+            ultimo_corpo = response.text[:500]
+
+            if response.status_code == 404:
+                logger.warning(f"[{clean_username}] 404 em {url} — endpoint não existe, a tentar próximo.")
+                continue
+
+            if response.status_code == 403:
+                logger.error(
+                    f"[{clean_username}] 403 em {url} — provavelmente não estás subscrito "
+                    f"a este endpoint específico no RapidAPI, ou a key é inválida."
+                )
+                continue
+
+            if response.status_code != 200:
+                logger.warning(f"[{clean_username}] Status {response.status_code} em {url}: {ultimo_corpo}")
+                continue
+
+            json_data = response.json()
+            # LOG COMPLETO para diagnóstico — vê isto nos logs do Render se ainda falhar.
+            logger.info(f"[{clean_username}] JSON completo de {url}:\n{json_data}")
+
+            if parece_privado(json_data):
+                logger.info(f"[{clean_username}] Perfil marcado como privado no JSON.")
+                resultado = (0, 0, 0, True, "perfil_privado")
+                CACHE_API[clean_username] = (time.time(), resultado)
+                return resultado
+
+            followers = extrair_seguidores(json_data)
+            if followers <= 0:
+                logger.warning(f"[{clean_username}] Endpoint respondeu 200 mas não encontrei seguidores no JSON.")
+                continue
+
+            avg_likes, avg_comments = extrair_posts_para_engagement(json_data)
+            if avg_likes is None or avg_comments is None:
+                # Não conseguimos engagement real deste endpoint — usamos uma
+                # estimativa conservadora, mas isto fica registado no log.
+                logger.info(f"[{clean_username}] Sem posts para engagement real, a estimar.")
+                avg_likes = int(followers * 0.03)
+                avg_comments = int(avg_likes * 0.05)
+                resultado = (followers, avg_likes, avg_comments, False, "engagement_estimado")
+            else:
+                resultado = (followers, avg_likes, avg_comments, False, "ok")
+
+            CACHE_API[clean_username] = (time.time(), resultado)
+            logger.info(f"[{clean_username}] Sucesso via {url}: seguidores={followers}, likes={avg_likes}, comments={avg_comments}")
+            return resultado
+
+        except requests.exceptions.Timeout:
+            logger.error(f"[{clean_username}] Timeout em {url}")
+        except Exception as e:
+            logger.error(f"[{clean_username}] Erro no pedido API ({url}): {e}")
+
+    logger.error(
+        f"[{clean_username}] Todas as tentativas falharam. "
+        f"Último status: {ultimo_status}, corpo: {ultimo_corpo}"
+    )
+    return 0, 0, 0, True, f"falhou_todas_tentativas(status={ultimo_status})"
+
 
 # ----------------------------------------------------
 # Comandos
@@ -150,7 +335,7 @@ async def receber_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not text.startswith("@"):
         text = "@" + text
-        
+
     context.user_data['username'] = text
     await update.message.reply_text(
         f"✅ Username: `{text}`\n\n"
@@ -163,7 +348,7 @@ async def receber_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receber_views(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     views_list = [int(v) for v in re.findall(r'\d+', text)]
-    
+
     if not views_list:
         await update.message.reply_text(
             "❌ Não encontrei nenhum número válido. Envia apenas números de views.\n"
@@ -187,7 +372,7 @@ async def receber_views(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receber_pais(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     context.user_data['pais'] = text
-    
+
     await update.message.reply_text(
         f"✅ País: `{text.upper()}`\n\n"
         "4️⃣ *Qual é a Percentagem (%) desse País?*\n\n"
@@ -231,7 +416,8 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
     msg_espera = await update.message.reply_text("🔎 *A consultar Instagram e a gerar auditoria...*", parse_mode="Markdown")
 
     try:
-        followers, avg_likes, avg_comments, is_fallback = buscar_dados_instagram_api(username)
+        followers, avg_likes, avg_comments, is_fallback, motivo = buscar_dados_instagram_api(username)
+        logger.info(f"Motivo do resultado da API para {username}: {motivo}")
 
         relatorio = evaluator.evaluate_profile(
             username=username,
@@ -244,13 +430,16 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
             pais=pais,
             pct_pais=pct_pais
         )
-        
+
         if followers > 0:
             txt_seguidores = f"{followers:,}"
             er_val = round(((avg_likes + avg_comments) / followers) * 100, 2)
             txt_er = f"{er_val}%"
+        elif motivo == "perfil_privado":
+            txt_seguidores = "Não obtido (Perfil privado)"
+            txt_er = "N/A"
         else:
-            txt_seguidores = "Não obtido (Perfil privado/API)"
+            txt_seguidores = "Não obtido (falha na API — ver logs)"
             txt_er = "N/A"
 
         resposta = (
@@ -284,6 +473,7 @@ async def receber_homens_e_gerar_relatorio(update: Update, context: ContextTypes
         await update.message.reply_text(resposta, parse_mode="Markdown")
 
     except Exception as e:
+        logger.exception(f"Erro ao gerar relatório para {username}")
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_espera.message_id)
         await update.message.reply_text(f"❌ Ocorreu um erro ao gerar o relatório. Escreve `/avaliar` para tentar de novo.", parse_mode="Markdown")
 
@@ -301,7 +491,7 @@ if __name__ == '__main__':
     t.start()
 
     app = ApplicationBuilder().token(TOKEN_BOT).build()
-    
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("avaliar", iniciar_guiado_ou_rapido)],
         states={
