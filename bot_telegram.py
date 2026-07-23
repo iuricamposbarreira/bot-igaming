@@ -227,12 +227,12 @@ def buscar_dados_instagram_api(username: str):
     # (404 = path errado, 403 = não subscrito a esse endpoint, 200+sem dados =
     # precisamos de ver o JSON real).
     tentativas = [
+        # Confirmado a funcionar em testes manuais no RapidAPI (23/07/2026):
+        # GET /v1/user_info_web?username=... -> devolve data.edge_followed_by.count
+        ("/v1/user_info_web", "username"),
+        # Alternativas de reserva, caso o endpoint principal mude no futuro:
         ("/userinfo/", "username_or_id"),
         ("/userinfo/", "username"),
-        ("/user_info", "username"),
-        ("/user/info", "username"),
-        ("/ig/user_info/", "username"),
-        ("/user/detailed_info", "username_or_id"),
     ]
 
     ultimo_status = None
